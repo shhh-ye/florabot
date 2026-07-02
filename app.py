@@ -1,12 +1,12 @@
 """
-Instagram AI-бот на базе OpenAI API (ChatGPT)
+Telegram + Instagram AI-бот на базе OpenAI API (ChatGPT)
 ------------------------------------
 Что делает этот сервер:
-1. Принимает вебхуки от Instagram (входящие DM)
+1. Принимает вебхуки от Telegram и от Instagram (входящие сообщения)
 2. Передаёт сообщение пользователя в OpenAI API
 3. Даёт модели "инструмент" search_google_sheet — чтобы она могла сама
    заглянуть в вашу Google Таблицу за нужной информацией
-4. Отправляет ответ обратно пользователю в Instagram Direct
+4. Отправляет ответ обратно в тот же канал, откуда пришло сообщение
 
 Все настройки (ключи, токены) берутся из переменных окружения — см. .env.example
 """
@@ -26,14 +26,21 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")  # можно поменять на другую модель
-IG_ACCESS_TOKEN = os.environ["IG_ACCESS_TOKEN"]          # токен страницы/аккаунта Instagram
-IG_VERIFY_TOKEN = os.environ["IG_VERIFY_TOKEN"]          # произвольная строка, которую вы сами придумаете
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]    # токен от @BotFather
+TELEGRAM_WEBHOOK_SECRET = os.environ["TELEGRAM_WEBHOOK_SECRET"]  # произвольная строка, которую вы сами придумаете
 GOOGLE_SHEET_ID = os.environ["GOOGLE_SHEET_ID"]          # ID таблицы из её URL
 GOOGLE_CREDENTIALS_JSON = os.environ["GOOGLE_CREDENTIALS_JSON"]  # содержимое service account JSON целиком
 
+# Instagram — необязательные переменные. Если не заданы, канал Instagram
+# просто не будет отвечать (вернёт ошибку 503), но Telegram при этом
+# продолжит работать нормально. Заполните их, когда решится вопрос
+# с Facebook-аккаунтом.
+IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN")
+IG_VERIFY_TOKEN = os.environ.get("IG_VERIFY_TOKEN")
+
 # Здесь пропишите, как именно бот должен себя вести — это "мозг" бота.
 SYSTEM_PROMPT = """
-Ты — ИИ-ассистент бренда в Instagram Direct.
+Ты — ИИ-ассистент бренда, отвечающий клиентам в мессенджерах (Telegram, Instagram).
 Отвечай дружелюбно, кратко и по делу, на языке, на котором пишет клиент.
 Если для ответа нужна конкретная информация (цены, наличие, условия) —
 ОБЯЗАТЕЛЬНО используй инструмент search_google_sheet, а не придумывай данные.
@@ -139,6 +146,17 @@ def ask_chatgpt(user_message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Отправка ответа обратно в Telegram
+# ---------------------------------------------------------------------------
+def send_telegram_message(chat_id, text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    r = requests.post(url, json=payload)
+    if r.status_code != 200:
+        print("Ошибка отправки в Telegram:", r.status_code, r.text)
+
+
+# ---------------------------------------------------------------------------
 # Отправка ответа обратно в Instagram
 # ---------------------------------------------------------------------------
 def send_instagram_message(recipient_id: str, text: str):
@@ -151,10 +169,37 @@ def send_instagram_message(recipient_id: str, text: str):
 
 
 # ---------------------------------------------------------------------------
-# Вебхук: подтверждение подписки (GET) и приём сообщений (POST)
+# Вебхук: приём сообщений от Telegram
 # ---------------------------------------------------------------------------
-@app.route("/webhook", methods=["GET"])
-def verify_webhook():
+@app.route("/webhook/telegram", methods=["POST"])
+def receive_telegram_webhook():
+    # Проверяем секретный токен — чтобы вебхук не мог дёргать кто попало
+    secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+    if secret != TELEGRAM_WEBHOOK_SECRET:
+        return "Forbidden", 403
+
+    data = request.get_json()
+    print("Входящее событие (Telegram):", json.dumps(data, ensure_ascii=False))
+
+    try:
+        message = data.get("message", {})
+        chat_id = message.get("chat", {}).get("id")
+        text = message.get("text")
+
+        if chat_id and text:
+            reply = ask_chatgpt(text)
+            send_telegram_message(chat_id, reply)
+    except Exception as e:
+        print("Ошибка обработки вебхука Telegram:", e)
+
+    return jsonify({"status": "ok"}), 200
+
+
+# ---------------------------------------------------------------------------
+# Вебхук: подтверждение подписки (GET) и приём сообщений (POST) от Instagram
+# ---------------------------------------------------------------------------
+@app.route("/webhook/instagram", methods=["GET"])
+def verify_instagram_webhook():
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -164,10 +209,14 @@ def verify_webhook():
     return "Verification failed", 403
 
 
-@app.route("/webhook", methods=["POST"])
-def receive_webhook():
+@app.route("/webhook/instagram", methods=["POST"])
+def receive_instagram_webhook():
+    if not IG_ACCESS_TOKEN:
+        # Instagram ещё не настроен (нет токена) — просто игнорируем
+        return jsonify({"status": "instagram not configured"}), 503
+
     data = request.get_json()
-    print("Входящее событие:", json.dumps(data, ensure_ascii=False))
+    print("Входящее событие (Instagram):", json.dumps(data, ensure_ascii=False))
 
     try:
         for entry in data.get("entry", []):
@@ -182,7 +231,7 @@ def receive_webhook():
                 reply = ask_chatgpt(text)
                 send_instagram_message(sender_id, reply)
     except Exception as e:
-        print("Ошибка обработки вебхука:", e)
+        print("Ошибка обработки вебхука Instagram:", e)
 
     return jsonify({"status": "ok"}), 200
 
