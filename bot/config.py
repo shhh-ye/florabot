@@ -28,6 +28,20 @@ IG_VERIFY_TOKEN = os.environ.get("IG_VERIFY_TOKEN")
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID")
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 
+# Волатильные колонки таблицы (цены, остатки) — НЕ попадают в RAG-индекс,
+# чтобы модель не могла выдать устаревший снимок. Актуальные значения модель
+# берёт живым инструментом search_google_sheet в момент ответа.
+# Сравнение без учёта регистра, по подстроке в названии колонки.
+SHEET_VOLATILE_COLUMNS = [
+    s.strip().lower()
+    for s in os.environ.get(
+        "SHEET_VOLATILE_COLUMNS",
+        "цена,стоимость,наличие,остаток,количество,кол-во,скидка,"
+        "price,cost,stock,quantity,qty,amount,discount",
+    ).split(",")
+    if s.strip()
+]
+
 # --- RAG ----------------------------------------------------------------------
 # Папка с документами базы знаний (FAQ, условия доставки, правила и т.п.)
 KNOWLEDGE_DIR = os.environ.get("KNOWLEDGE_DIR", "knowledge")

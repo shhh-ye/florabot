@@ -7,8 +7,13 @@
    Имя файла становится категорией фрагментов.
 2. Google Таблица (если настроена) — каждая строка превращается в короткий
    текстовый фрагмент категории "catalog". Это даёт семантический поиск
-   по каталогу; для точных актуальных цифр у модели остаётся инструмент
-   search_google_sheet.
+   по каталогу ("что-нибудь романтичное до 3000").
+
+   ВАЖНО: волатильные колонки (цена, наличие, остаток — см.
+   config.SHEET_VOLATILE_COLUMNS) в индекс НЕ попадают. Индекс — это
+   снимок на момент индексации, и устаревшая цена оттуда могла бы
+   протечь в ответ. Актуальные цифры модель всегда берёт живым
+   инструментом search_google_sheet в момент ответа клиенту.
 
 Запуск вручную: python scripts/index_knowledge.py [--reset]
 """
@@ -44,8 +49,20 @@ def load_documents_from_dir(directory: str | None = None) -> list[dict]:
     return docs
 
 
+def _is_volatile_column(header: str) -> bool:
+    """Колонка с ценой/остатком? Такие значения в индекс не кладём."""
+    header_lower = header.strip().lower()
+    return any(marker in header_lower for marker in config.SHEET_VOLATILE_COLUMNS)
+
+
 def load_documents_from_sheet() -> list[dict]:
-    """Превращает строки Google Таблицы в документы (по одному на строку)."""
+    """
+    Превращает строки Google Таблицы в документы (по одному на строку).
+
+    В текст фрагмента идут только стабильные поля (название, описание,
+    повод, цвет...). Цены и остатки отфильтровываются — вместо них к
+    фрагменту добавляется указание проверить их живым инструментом.
+    """
     if not (config.GOOGLE_SHEET_ID and config.GOOGLE_CREDENTIALS_JSON):
         return []
 
@@ -54,9 +71,18 @@ def load_documents_from_sheet() -> list[dict]:
 
     docs = []
     for i, row in enumerate(get_all_rows()):
-        line = "; ".join(f"{key}: {value}" for key, value in row.items() if str(value).strip())
+        stable_fields = {
+            key: value
+            for key, value in row.items()
+            if str(value).strip() and not _is_volatile_column(str(key))
+        }
+        line = "; ".join(f"{key}: {value}" for key, value in stable_fields.items())
         if not line:
             continue
+        line += (
+            "\n(Актуальную цену и наличие этого товара узнавай ТОЛЬКО "
+            "через инструмент search_google_sheet — здесь их нет намеренно.)"
+        )
         docs.append(
             {
                 "source": f"google-sheet:row-{i + 2}",  # +2: заголовки + нумерация с 1
