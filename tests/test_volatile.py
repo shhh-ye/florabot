@@ -14,7 +14,9 @@ from pathlib import Path
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-fake")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123:fake")
 os.environ.setdefault("TELEGRAM_WEBHOOK_SECRET", "test-secret")
-os.environ["CHROMA_DIR"] = tempfile.mkdtemp(prefix="chroma-test-")
+os.environ["RAG_INDEX_PATH"] = os.path.join(
+    tempfile.mkdtemp(prefix="rag-test-"), "index.json"
+)
 os.environ["GOOGLE_SHEET_ID"] = "fake-id"
 os.environ["GOOGLE_CREDENTIALS_JSON"] = "{}"
 
