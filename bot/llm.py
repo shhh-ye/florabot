@@ -19,7 +19,9 @@ from bot.prompts import build_system_prompt
 from bot.rag.retriever import retrieve_context
 from bot.sheets import search_google_sheet
 
-client = OpenAI(api_key=config.OPENAI_API_KEY)
+# Без timeout клиент OpenAI ждёт ответа до 10 минут — всё это время висит
+# поток и молчит бот, поэтому ограничиваем
+client = OpenAI(api_key=config.OPENAI_API_KEY, timeout=config.OPENAI_TIMEOUT)
 
 # Максимум циклов «модель просит инструмент → выполняем» на одно сообщение.
 # Страховка: без лимита модель теоретически может дёргать инструмент

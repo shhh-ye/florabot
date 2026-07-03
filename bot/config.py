@@ -45,10 +45,8 @@ SHEET_VOLATILE_COLUMNS = [
 # --- RAG ----------------------------------------------------------------------
 # Папка с документами базы знаний (FAQ, условия доставки, правила и т.п.)
 KNOWLEDGE_DIR = os.environ.get("KNOWLEDGE_DIR", "knowledge")
-# Куда ChromaDB сохраняет векторный индекс
-CHROMA_DIR = os.environ.get("CHROMA_DIR", ".chroma")
-# Имя коллекции в ChromaDB
-CHROMA_COLLECTION = os.environ.get("CHROMA_COLLECTION", "florabot_knowledge")
+# Файл, в котором сохраняется векторный индекс (JSON)
+RAG_INDEX_PATH = os.environ.get("RAG_INDEX_PATH", ".rag_index.json")
 # Сколько самых похожих фрагментов подставлять в контекст модели
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "6"))
 # Размер фрагмента (в символах) при разбиении документов
@@ -59,3 +57,11 @@ CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "150"))
 # --- История диалога -----------------------------------------------------------
 # Сколько последних сообщений (реплик) держать в памяти для каждого клиента
 HISTORY_MAX_MESSAGES = int(os.environ.get("HISTORY_MAX_MESSAGES", "10"))
+
+# --- Таймауты внешних запросов ---------------------------------------------------
+# Зависший внешний запрос без таймаута держит поток вечно — воркер копит
+# такие потоки и в итоге гибнет. Лимиты с запасом, но конечные.
+# Запросы к OpenAI (генерация ответа, embeddings), секунды
+OPENAI_TIMEOUT = float(os.environ.get("OPENAI_TIMEOUT", "60"))
+# Запросы к Telegram/Instagram API и Google Sheets, секунды
+HTTP_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "20"))

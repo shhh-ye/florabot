@@ -20,6 +20,8 @@ def _get_sheet():
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     gc = gspread.authorize(creds)
+    # Запрос к Google без таймаута может висеть вечно и держать поток
+    gc.set_timeout(config.HTTP_TIMEOUT)
     return gc.open_by_key(config.GOOGLE_SHEET_ID).sheet1
 
 

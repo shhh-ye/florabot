@@ -17,7 +17,9 @@ os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123:fake")
 os.environ.setdefault("TELEGRAM_WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("IG_ACCESS_TOKEN", "fake-ig-token")
 os.environ.setdefault("IG_VERIFY_TOKEN", "fake-verify")
-os.environ["CHROMA_DIR"] = tempfile.mkdtemp(prefix="chroma-test-")
+os.environ["RAG_INDEX_PATH"] = os.path.join(
+    tempfile.mkdtemp(prefix="rag-test-"), "index.json"
+)
 # Пустая папка знаний — чтобы старт сервера не пытался строить индекс через сеть
 os.environ["KNOWLEDGE_DIR"] = tempfile.mkdtemp(prefix="knowledge-test-")
 os.environ["HISTORY_MAX_MESSAGES"] = "4"
@@ -41,6 +43,44 @@ chunks = chunk_document("текст документа", source="doc.md", catego
 assert chunks[0]["metadata"] == {"source": "doc.md", "category": "faq", "chunk": 0}
 assert chunks[0]["id"].startswith("doc.md:0:")
 print("OK чанкер")
+
+# --- Векторное хранилище (поиск, сохранение на диск, reset) -------------------
+# Embeddings подменяем фейком: «векторы» по ключевым словам, без сети
+from bot.rag import store as store_module
+
+
+def fake_embed(texts):
+    return [
+        [float("роз" in t.lower()), float("доставк" in t.lower()), 0.1]
+        for t in texts
+    ]
+
+
+store_module.embed_texts = fake_embed
+
+store_path = os.path.join(tempfile.mkdtemp(prefix="rag-store-test-"), "index.json")
+store = store_module.VectorStore(path=store_path)
+assert store.count() == 0 and store.query("что угодно") == []
+
+store.upsert(chunk_document("Розы красные, свежие", source="roses.md"))
+store.upsert(chunk_document("Доставка по городу за 2 часа", source="delivery.md"))
+assert store.count() == 2
+
+results = store.query("сколько идёт доставка?", top_k=1)
+assert results[0]["metadata"]["source"] == "delivery.md", "нашёлся не тот фрагмент"
+
+# Повторный upsert того же документа не создаёт дубликатов
+store.upsert(chunk_document("Розы красные, свежие", source="roses.md"))
+assert store.count() == 2, "повторная индексация задублировала фрагменты"
+
+# Индекс переживает перезапуск (новый экземпляр читает тот же файл)
+store2 = store_module.VectorStore(path=store_path)
+assert store2.count() == 2
+assert store2.query("розы", top_k=1)[0]["metadata"]["source"] == "roses.md"
+
+store2.reset()
+assert store2.count() == 0
+print("OK векторное хранилище")
 
 # --- История диалога ---------------------------------------------------------
 from bot import memory
