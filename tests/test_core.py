@@ -23,6 +23,8 @@ os.environ["RAG_INDEX_PATH"] = os.path.join(
 # Пустая папка знаний — чтобы старт сервера не пытался строить индекс через сеть
 os.environ["KNOWLEDGE_DIR"] = tempfile.mkdtemp(prefix="knowledge-test-")
 os.environ["HISTORY_MAX_MESSAGES"] = "4"
+# Ключи в тестах фейковые — самопроверке нечего проверять
+os.environ["STARTUP_SELF_CHECK"] = "0"
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

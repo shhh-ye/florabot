@@ -27,6 +27,7 @@ from bot import config
 from bot.channels import send_instagram_message, send_telegram_message
 from bot.llm import generate_reply
 from bot.rag.indexer import ensure_index
+from bot.selfcheck import run_selfcheck
 
 app = Flask(__name__)
 
@@ -47,13 +48,26 @@ def _is_duplicate_event(event_id) -> bool:
         _seen_events.append(event_id)
         return False
 
-# При старте сервера строим RAG-индекс, если его ещё нет (после деплоя
-# на Render диск пустой). Строго в фоновом потоке: индексация ходит в
-# OpenAI и Google Таблицу, и если делать её при импорте, воркер не успевает
-# начать отвечать за таймаут gunicorn — тот убивает его ещё до старта, и
-# бот умирает в вечном цикле перезапусков. Пока индекс строится, бот уже
-# отвечает (просто без базы знаний — llm.py это переживает).
-threading.Thread(target=ensure_index, daemon=True).start()
+def _startup_background():
+    """
+    Стартовые задачи, которым нужна сеть. Строго в фоновом потоке: если
+    выполнять их при импорте, воркер не успевает начать отвечать за
+    таймаут gunicorn — тот убивает его ещё до старта, и бот умирает в
+    вечном цикле перезапусков. Пока они идут, бот уже отвечает.
+    """
+    # Самопроверка ключей/токенов — результат в логе, строки SELF-CHECK
+    if config.STARTUP_SELF_CHECK:
+        try:
+            run_selfcheck()
+        except Exception:
+            traceback.print_exc()
+    # RAG-индекс строим, если его ещё нет (после деплоя на Render диск
+    # пустой). Если индекс уже есть — шаг мгновенный. Пока строится,
+    # бот отвечает без базы знаний — llm.py это переживает.
+    ensure_index()
+
+
+threading.Thread(target=_startup_background, daemon=True).start()
 
 
 def _reply_in_background(handler, *args):
