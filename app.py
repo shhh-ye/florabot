@@ -18,6 +18,7 @@ import hmac
 import json
 import os
 import threading
+import traceback
 from collections import deque
 
 from flask import Flask, request, jsonify
@@ -68,20 +69,32 @@ def _reply_in_background(handler, *args):
     threading.Thread(target=handler, args=args, daemon=True).start()
 
 
+# Что сказать клиенту, если генерация ответа упала (OpenAI недоступен,
+# кончился баланс API и т.п.) — лучше честное «попозже», чем молчание
+FALLBACK_REPLY = (
+    "Извините, у нас небольшие технические неполадки. "
+    "Напишите, пожалуйста, чуть позже — мы обязательно ответим!"
+)
+
+
 def _process_telegram_message(chat_id, text):
     try:
         reply = generate_reply(text, chat_id=f"tg:{chat_id}")
-        send_telegram_message(chat_id, reply)
-    except Exception as e:
-        print("Ошибка обработки сообщения Telegram:", e)
+    except Exception:
+        print("Ошибка генерации ответа (Telegram):")
+        traceback.print_exc()
+        reply = FALLBACK_REPLY
+    send_telegram_message(chat_id, reply)
 
 
 def _process_instagram_message(sender_id, text):
     try:
         reply = generate_reply(text, chat_id=f"ig:{sender_id}")
-        send_instagram_message(sender_id, reply)
-    except Exception as e:
-        print("Ошибка обработки сообщения Instagram:", e)
+    except Exception:
+        print("Ошибка генерации ответа (Instagram):")
+        traceback.print_exc()
+        reply = FALLBACK_REPLY
+    send_instagram_message(sender_id, reply)
 
 
 # ---------------------------------------------------------------------------
