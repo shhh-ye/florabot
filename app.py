@@ -160,9 +160,15 @@ def receive_instagram_webhook():
     return jsonify({"status": "ok"}), 200
 
 
+# Метка сборки: видна на главной странице сервиса. Позволяет за секунду
+# проверить, какой код реально запущен на Render (открыть URL сервиса в
+# браузере). Меняйте её при заметных правках, чтобы отличать версии.
+BUILD_MARKER = "florabot v3 — stop-slop в промпте (2026-07-03)"
+
+
 @app.route("/", methods=["GET"])
 def health_check():
-    return "Бот работает", 200
+    return f"Бот работает. {BUILD_MARKER}", 200
 
 
 if __name__ == "__main__":
