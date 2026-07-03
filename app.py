@@ -51,6 +51,35 @@ def _is_duplicate_event(event_id) -> bool:
 ensure_index()
 
 
+def _reply_in_background(handler, *args):
+    """
+    Генерирует и отправляет ответ в фоновом потоке.
+
+    Зачем: генерация ответа (RAG + модель + походы в Google Таблицу) может
+    занимать больше 30 секунд, а gunicorn убивает воркер, который держит
+    запрос дольше своего таймаута. Мессенджер при этом не получает 200 и
+    начинает повторять доставку — воркеры гибнут по кругу, бот "умирает".
+    Поэтому вебхук отвечает 200 сразу, а ответ клиенту уходит из потока.
+    """
+    threading.Thread(target=handler, args=args, daemon=True).start()
+
+
+def _process_telegram_message(chat_id, text):
+    try:
+        reply = generate_reply(text, chat_id=f"tg:{chat_id}")
+        send_telegram_message(chat_id, reply)
+    except Exception as e:
+        print("Ошибка обработки сообщения Telegram:", e)
+
+
+def _process_instagram_message(sender_id, text):
+    try:
+        reply = generate_reply(text, chat_id=f"ig:{sender_id}")
+        send_instagram_message(sender_id, reply)
+    except Exception as e:
+        print("Ошибка обработки сообщения Instagram:", e)
+
+
 # ---------------------------------------------------------------------------
 # Вебхук: приём сообщений от Telegram
 # ---------------------------------------------------------------------------
@@ -73,8 +102,7 @@ def receive_telegram_webhook():
         text = message.get("text")
 
         if chat_id and text:
-            reply = generate_reply(text, chat_id=f"tg:{chat_id}")
-            send_telegram_message(chat_id, reply)
+            _reply_in_background(_process_telegram_message, chat_id, text)
     except Exception as e:
         print("Ошибка обработки вебхука Telegram:", e)
 
@@ -121,8 +149,7 @@ def receive_instagram_webhook():
                 if mid and _is_duplicate_event(f"ig:{mid}"):
                     continue  # Meta повторил доставку этого сообщения
 
-                reply = generate_reply(text, chat_id=f"ig:{sender_id}")
-                send_instagram_message(sender_id, reply)
+                _reply_in_background(_process_instagram_message, sender_id, text)
     except Exception as e:
         print("Ошибка обработки вебхука Instagram:", e)
 
