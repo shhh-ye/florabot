@@ -29,6 +29,8 @@ def _post(channel: str, url: str, **kwargs):
         r = requests.post(url, timeout=config.HTTP_TIMEOUT, **kwargs)
         if r.status_code != 200:
             print(f"Ошибка отправки в {channel}:", r.status_code, r.text)
+        else:
+            print(f"Ответ отправлен в {channel}")
     except requests.RequestException as e:
         print(f"Ошибка сети при отправке в {channel}:", e)
 

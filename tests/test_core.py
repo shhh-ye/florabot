@@ -160,4 +160,25 @@ assert wait_replies(2) == 2, "повтор по mid не должен дать �
 assert replies[1] == ("ig:u1", "есть пионы?")
 print("OK вебхуки: секрет, дедупликация, эхо, фоновая обработка")
 
+# --- Запасной ответ при сбое генерации -----------------------------------------
+# Если OpenAI упал (нет баланса, сеть), клиент получает вежливое сообщение,
+# а не тишину
+sent = []
+
+
+def broken_generate(text, chat_id=None):
+    raise RuntimeError("OpenAI недоступен (тестовый сбой)")
+
+
+app_module.generate_reply = broken_generate
+app_module.send_telegram_message = lambda chat_id, text: sent.append((chat_id, text))
+
+update = {"update_id": 99, "message": {"chat": {"id": 8}, "text": "алло"}}
+assert client.post("/webhook/telegram", json=update, headers=headers).status_code == 200
+deadline = time.time() + 3
+while time.time() < deadline and not sent:
+    time.sleep(0.02)
+assert sent == [(8, app_module.FALLBACK_REPLY)], "клиент не получил запасной ответ"
+print("OK запасной ответ при сбое генерации")
+
 print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
