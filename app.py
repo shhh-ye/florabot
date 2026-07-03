@@ -14,8 +14,11 @@ Telegram + Instagram AI-бот с RAG (поиск по базе знаний)
 Все настройки берутся из переменных окружения — см. env.example
 """
 
+import hmac
 import json
 import os
+import threading
+from collections import deque
 
 from flask import Flask, request, jsonify
 
@@ -25,6 +28,23 @@ from bot.llm import generate_reply
 from bot.rag.indexer import ensure_index
 
 app = Flask(__name__)
+
+# Мессенджеры повторяют доставку события, если не получили ответ 200 вовремя
+# (а наш ответ занимает секунды: LLM + инструменты). Помним ID последних
+# событий, чтобы не ответить клиенту дважды на одно и то же сообщение.
+_seen_events = deque(maxlen=500)
+_seen_lock = threading.Lock()
+
+
+def _is_duplicate_event(event_id) -> bool:
+    """True, если это событие уже обрабатывали (повторная доставка)."""
+    if event_id is None:
+        return False
+    with _seen_lock:
+        if event_id in _seen_events:
+            return True
+        _seen_events.append(event_id)
+        return False
 
 # При старте сервера строим RAG-индекс, если его ещё нет (после деплоя
 # на Render диск пустой). Если индекс уже построен — шаг мгновенный.
@@ -38,11 +58,14 @@ ensure_index()
 def receive_telegram_webhook():
     # Проверяем секретный токен — чтобы вебхук не мог дёргать кто попало
     secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-    if secret != config.TELEGRAM_WEBHOOK_SECRET:
+    if not hmac.compare_digest(secret or "", config.TELEGRAM_WEBHOOK_SECRET):
         return "Forbidden", 403
 
     data = request.get_json()
     print("Входящее событие (Telegram):", json.dumps(data, ensure_ascii=False))
+
+    if _is_duplicate_event(data.get("update_id")):
+        return jsonify({"status": "duplicate"}), 200
 
     try:
         message = data.get("message", {})
@@ -90,6 +113,13 @@ def receive_instagram_webhook():
 
                 if not text:
                     continue  # пропускаем стикеры/вложения без текста
+                if message.get("is_echo"):
+                    # Instagram присылает вебхук и на НАШИ исходящие сообщения.
+                    # Без этой проверки бот отвечал бы сам себе по кругу.
+                    continue
+                mid = message.get("mid")
+                if mid and _is_duplicate_event(f"ig:{mid}"):
+                    continue  # Meta повторил доставку этого сообщения
 
                 reply = generate_reply(text, chat_id=f"ig:{sender_id}")
                 send_instagram_message(sender_id, reply)
