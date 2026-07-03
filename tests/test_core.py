@@ -1,0 +1,107 @@
+"""
+Базовые автотесты: чанкер, история диалога, разрезание длинных сообщений,
+вебхуки (секрет, дедупликация повторных доставок, фильтр эха Instagram).
+
+Запуск из корня проекта:  python tests/test_core.py
+Сеть и настоящие ключи не нужны — всё внешнее подменяется фейками.
+"""
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+# --- Фейковое окружение (до импорта модулей бота) --------------------------
+os.environ.setdefault("OPENAI_API_KEY", "sk-test-fake")
+os.environ.setdefault("TELEGRAM_BOT_TOKEN", "123:fake")
+os.environ.setdefault("TELEGRAM_WEBHOOK_SECRET", "test-secret")
+os.environ.setdefault("IG_ACCESS_TOKEN", "fake-ig-token")
+os.environ.setdefault("IG_VERIFY_TOKEN", "fake-verify")
+os.environ["CHROMA_DIR"] = tempfile.mkdtemp(prefix="chroma-test-")
+# Пустая папка знаний — чтобы старт сервера не пытался строить индекс через сеть
+os.environ["KNOWLEDGE_DIR"] = tempfile.mkdtemp(prefix="knowledge-test-")
+os.environ["HISTORY_MAX_MESSAGES"] = "4"
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.chdir(ROOT)
+
+# --- Чанкер -----------------------------------------------------------------
+from bot.rag.chunker import chunk_document, split_text
+
+parts = split_text("абзац один\n\nабзац два\n\n" + "х" * 2000, max_chars=800, overlap=150)
+assert all(len(p) <= 800 for p in parts), "фрагмент длиннее лимита"
+assert any("абзац один" in p for p in parts)
+
+# Кривой конфиг (overlap >= max_chars) не должен зациклить разбиение
+parts = split_text("y" * 500, max_chars=100, overlap=100)
+assert parts and all(len(p) <= 100 for p in parts)
+
+chunks = chunk_document("текст документа", source="doc.md", category="faq")
+assert chunks[0]["metadata"] == {"source": "doc.md", "category": "faq", "chunk": 0}
+assert chunks[0]["id"].startswith("doc.md:0:")
+print("OK чанкер")
+
+# --- История диалога ---------------------------------------------------------
+from bot import memory
+
+for i in range(10):
+    memory.remember("chat1", f"вопрос {i}", f"ответ {i}")
+history = memory.get_history("chat1")
+assert len(history) == 4, "история должна обрезаться до HISTORY_MAX_MESSAGES"
+assert history[-1] == {"role": "assistant", "content": "ответ 9"}
+assert memory.get_history(None) == []
+print("OK история диалога")
+
+# --- Разрезание длинных сообщений для Telegram -------------------------------
+from bot.channels import split_long_message
+
+assert split_long_message("короткое") == ["короткое"]
+long_text = "\n".join("строка " + str(i) for i in range(1000))
+parts = split_long_message(long_text)
+assert all(len(p) <= 4096 for p in parts)
+assert "".join(p + "\n" for p in parts).split() == long_text.split(), "текст потерялся при разрезании"
+parts = split_long_message("б" * 9000)  # без переносов — жёсткая нарезка
+assert all(len(p) <= 4096 for p in parts) and sum(len(p) for p in parts) == 9000
+print("OK разрезание длинных сообщений")
+
+# --- Вебхуки: секрет, дедупликация, эхо Instagram ------------------------------
+import app as app_module
+
+replies = []
+app_module.generate_reply = lambda text, chat_id=None: (replies.append((chat_id, text)), "ответ")[1]
+app_module.send_telegram_message = lambda chat_id, text: None
+app_module.send_instagram_message = lambda recipient_id, text: None
+
+client = app_module.app.test_client()
+
+# Неверный секрет → 403, обработки нет
+r = client.post("/webhook/telegram", json={"update_id": 1}, headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"})
+assert r.status_code == 403 and not replies
+
+# Нормальное сообщение обрабатывается один раз, повтор доставки — игнорируется
+update = {"update_id": 42, "message": {"chat": {"id": 7}, "text": "привет"}}
+headers = {"X-Telegram-Bot-Api-Secret-Token": "test-secret"}
+assert client.post("/webhook/telegram", json=update, headers=headers).status_code == 200
+assert client.post("/webhook/telegram", json=update, headers=headers).status_code == 200
+assert replies == [("tg:7", "привет")], "повторная доставка не должна дать второй ответ"
+
+# Instagram: эхо собственного сообщения бота пропускается
+echo_event = {"entry": [{"messaging": [{
+    "sender": {"id": "u1"},
+    "message": {"mid": "m-echo", "is_echo": True, "text": "я сам бот"},
+}]}]}
+assert client.post("/webhook/instagram", json=echo_event).status_code == 200
+assert len(replies) == 1, "на эхо отвечать нельзя"
+
+# Instagram: обычное сообщение обрабатывается, повтор по mid — нет
+ig_event = {"entry": [{"messaging": [{
+    "sender": {"id": "u1"},
+    "message": {"mid": "m-1", "text": "есть пионы?"},
+}]}]}
+assert client.post("/webhook/instagram", json=ig_event).status_code == 200
+assert client.post("/webhook/instagram", json=ig_event).status_code == 200
+assert replies[1:] == [("ig:u1", "есть пионы?")]
+print("OK вебхуки: секрет, дедупликация, эхо")
+
+print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")

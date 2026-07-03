@@ -21,6 +21,11 @@ from bot.sheets import search_google_sheet
 
 client = OpenAI(api_key=config.OPENAI_API_KEY)
 
+# Максимум циклов «модель просит инструмент → выполняем» на одно сообщение.
+# Страховка: без лимита модель теоретически может дёргать инструмент
+# бесконечно, сжигая токены и время ответа.
+MAX_TOOL_ROUNDS = 5
+
 # Описание инструмента для модели (tool use)
 TOOLS = [
     {
@@ -70,7 +75,8 @@ def generate_reply(user_message: str, chat_id=None) -> str:
     )
 
     # 4. Пока модель просит вызвать инструмент — выполняем и отдаём результат
-    while response.choices[0].finish_reason == "tool_calls":
+    rounds = 0
+    while response.choices[0].finish_reason == "tool_calls" and rounds < MAX_TOOL_ROUNDS:
         assistant_message = response.choices[0].message
         messages.append(assistant_message)
 
@@ -78,18 +84,24 @@ def generate_reply(user_message: str, chat_id=None) -> str:
             if tool_call.function.name == "search_google_sheet":
                 args = json.loads(tool_call.function.arguments)
                 result = search_google_sheet(args["query"])
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result,
-                    }
-                )
+            else:
+                # На каждый tool_call обязан быть ответ, иначе API вернёт ошибку
+                result = "Неизвестный инструмент."
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result,
+                }
+            )
 
+        rounds += 1
         response = client.chat.completions.create(
             model=config.OPENAI_MODEL,
             messages=messages,
             tools=TOOLS,
+            # Лимит исчерпан — требуем финальный текстовый ответ без инструментов
+            tool_choice="none" if rounds == MAX_TOOL_ROUNDS else "auto",
         )
 
     reply = response.choices[0].message.content or "Извините, не получилось сформировать ответ."

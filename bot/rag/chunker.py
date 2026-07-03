@@ -37,10 +37,12 @@ def split_text(
             if current:
                 chunks.append(current)
                 current = ""
+            # max(1, ...) — защита от вечного цикла, если overlap >= max_chars
+            step = max(1, max_chars - overlap)
             start = 0
             while start < len(paragraph):
                 chunks.append(paragraph[start : start + max_chars])
-                start += max_chars - overlap
+                start += step
             continue
 
         # Абзац помещается — пробуем приклеить к текущему фрагменту

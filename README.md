@@ -25,6 +25,7 @@ bot/
     retriever.py            — поиск знаний под вопрос клиента
 knowledge/                  — документы базы знаний (.md/.txt) — РЕДАКТИРУЙТЕ ИХ
 scripts/index_knowledge.py  — скрипт индексации базы знаний
+tests/                      — автотесты (запуск: python tests/test_core.py)
 ```
 
 ## Как работает RAG (поиск по базе знаний)
@@ -132,7 +133,10 @@ Allow access to messages). Осталось получить токен и по�
 4. Настройки сервиса:
    - **Runtime**: Python 3
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `gunicorn app:app`
+   - **Start Command**: `gunicorn app:app --timeout 120 --threads 4`
+     (таймаут больше стандартного, потому что ответ модели может занимать
+     десятки секунд; число воркеров НЕ увеличивайте — история диалога
+     хранится в памяти процесса и при нескольких воркерах терялась бы)
 5. В разделе **Environment** добавьте переменные (полный список с
    пояснениями — в `env.example`):
    - `OPENAI_API_KEY`
