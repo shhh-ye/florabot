@@ -66,6 +66,10 @@ assert all(len(p) <= 4096 for p in parts) and sum(len(p) for p in parts) == 9000
 print("OK разрезание длинных сообщений")
 
 # --- Вебхуки: секрет, дедупликация, эхо Instagram ------------------------------
+# Ответ генерируется в фоновом потоке (вебхук отвечает мессенджеру сразу),
+# поэтому после запроса даём потоку время отработать.
+import time
+
 import app as app_module
 
 replies = []
@@ -74,6 +78,16 @@ app_module.send_telegram_message = lambda chat_id, text: None
 app_module.send_instagram_message = lambda recipient_id, text: None
 
 client = app_module.app.test_client()
+
+
+def wait_replies(expected_count, timeout=3.0):
+    """Ждёт, пока фоновые потоки не наберут expected_count ответов."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and len(replies) < expected_count:
+        time.sleep(0.02)
+    time.sleep(0.1)  # даём шанс появиться ЛИШНЕМУ ответу, если он есть
+    return len(replies)
+
 
 # Неверный секрет → 403, обработки нет
 r = client.post("/webhook/telegram", json={"update_id": 1}, headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"})
@@ -84,7 +98,8 @@ update = {"update_id": 42, "message": {"chat": {"id": 7}, "text": "привет"
 headers = {"X-Telegram-Bot-Api-Secret-Token": "test-secret"}
 assert client.post("/webhook/telegram", json=update, headers=headers).status_code == 200
 assert client.post("/webhook/telegram", json=update, headers=headers).status_code == 200
-assert replies == [("tg:7", "привет")], "повторная доставка не должна дать второй ответ"
+assert wait_replies(1) == 1, "повторная доставка не должна дать второй ответ"
+assert replies == [("tg:7", "привет")]
 
 # Instagram: эхо собственного сообщения бота пропускается
 echo_event = {"entry": [{"messaging": [{
@@ -92,7 +107,7 @@ echo_event = {"entry": [{"messaging": [{
     "message": {"mid": "m-echo", "is_echo": True, "text": "я сам бот"},
 }]}]}
 assert client.post("/webhook/instagram", json=echo_event).status_code == 200
-assert len(replies) == 1, "на эхо отвечать нельзя"
+assert wait_replies(1) == 1, "на эхо отвечать нельзя"
 
 # Instagram: обычное сообщение обрабатывается, повтор по mid — нет
 ig_event = {"entry": [{"messaging": [{
@@ -101,7 +116,8 @@ ig_event = {"entry": [{"messaging": [{
 }]}]}
 assert client.post("/webhook/instagram", json=ig_event).status_code == 200
 assert client.post("/webhook/instagram", json=ig_event).status_code == 200
-assert replies[1:] == [("ig:u1", "есть пионы?")]
-print("OK вебхуки: секрет, дедупликация, эхо")
+assert wait_replies(2) == 2, "повтор по mid не должен дать второй ответ"
+assert replies[1] == ("ig:u1", "есть пионы?")
+print("OK вебхуки: секрет, дедупликация, эхо, фоновая обработка")
 
 print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
