@@ -126,11 +126,12 @@ def ensure_index(store: VectorStore | None = None):
     """
     store = store or get_store()
     if store.count() > 0:
-        print(f"RAG-индекс уже построен: {store.count()} фрагментов")
+        print(f"RAG-индекс уже построен: {store.count()} фрагментов", flush=True)
         return
+    print("RAG-индекс пуст — строю в фоне...", flush=True)
     try:
         total = reindex(store)
-        print(f"RAG-индекс построен при старте: {total} фрагментов")
+        print(f"RAG-индекс построен при старте: {total} фрагментов", flush=True)
     except Exception as e:
         # Без индекса бот всё равно отвечает (просто без базы знаний)
-        print("Не удалось построить RAG-индекс при старте:", e)
+        print("Не удалось построить RAG-индекс при старте:", e, flush=True)

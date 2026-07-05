@@ -70,3 +70,16 @@ HISTORY_MAX_MESSAGES = int(os.environ.get("HISTORY_MAX_MESSAGES", "10"))
 OPENAI_TIMEOUT = float(os.environ.get("OPENAI_TIMEOUT", "60"))
 # Запросы к Telegram/Instagram API и Google Sheets, секунды
 HTTP_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "20"))
+
+# OPENAI_TIMEOUT ограничивает ОДНУ попытку запроса, а не весь вызов: сами
+# SDK (OpenAI, Google) при ошибках/лимитах повторяют запрос с растущей
+# паузой между попытками, и это время в таймаут не входит — один вызов
+# может растянуться на много минут. max_retries=1 не даёт повторам
+# накапливаться до неприемлемой длины.
+OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "1"))
+
+# Жёсткий потолок на генерацию ОДНОГО ответа целиком (RAG + модель + все
+# инструменты). Если реальная причина зависания не в одном конкретном
+# запросе, а, например, в цепочке ретраев на уровне SDK — этот потолок
+# всё равно не даст клиенту молчать вечно: не уложились — шлём извинение.
+REPLY_DEADLINE = float(os.environ.get("REPLY_DEADLINE", "120"))

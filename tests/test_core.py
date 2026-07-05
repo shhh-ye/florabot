@@ -23,6 +23,8 @@ os.environ["RAG_INDEX_PATH"] = os.path.join(
 # Пустая папка знаний — чтобы старт сервера не пытался строить индекс через сеть
 os.environ["KNOWLEDGE_DIR"] = tempfile.mkdtemp(prefix="knowledge-test-")
 os.environ["HISTORY_MAX_MESSAGES"] = "4"
+# Короткий дедлайн генерации, чтобы тест предохранителя не ждал долго
+os.environ["REPLY_DEADLINE"] = "1"
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -159,5 +161,21 @@ assert client.post("/webhook/instagram", json=ig_event).status_code == 200
 assert wait_replies(2) == 2, "повтор по mid не должен дать второй ответ"
 assert replies[1] == ("ig:u1", "есть пионы?")
 print("OK вебхуки: секрет, дедупликация, эхо, фоновая обработка")
+
+# --- Предохранитель: зависшая генерация → запасной ответ, а не тишина ---------
+sent = []
+app_module.generate_reply = lambda text, chat_id=None: time.sleep(10) or "не дождётесь"
+app_module.send_telegram_message = lambda chat_id, text: sent.append(text)
+
+hang_update = {"update_id": 99, "message": {"chat": {"id": 8}, "text": "зависни"}}
+assert client.post("/webhook/telegram", json=hang_update, headers=headers).status_code == 200
+
+deadline = time.time() + 5  # REPLY_DEADLINE=1с в этом тесте — ждём с запасом
+while time.time() < deadline and not sent:
+    time.sleep(0.05)
+assert sent == [app_module.FALLBACK_REPLY], (
+    f"при зависании клиент должен получить запасной ответ, получили: {sent}"
+)
+print("OK предохранитель: зависшая генерация не оставляет клиента без ответа")
 
 print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
