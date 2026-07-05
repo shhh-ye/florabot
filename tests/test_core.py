@@ -107,6 +107,70 @@ parts = split_long_message("б" * 9000)  # без переносов — жёс�
 assert all(len(p) <= 4096 for p in parts) and sum(len(p) for p in parts) == 9000
 print("OK разрезание длинных сообщений")
 
+# --- Доставка: повторы и жёсткий потолок по времени ---------------------------
+# Регрессия: ответ сгенерировался, но отправка в Telegram зависла на DNS и
+# молча «съела» сообщение (в логах ни ✓, ни ✗). Теперь каждая попытка
+# ограничена по времени, временные сбои повторяются, а постоянные — нет.
+import threading
+import time
+import types
+
+import bot.channels as channels
+
+# Гасим паузы между попытками только внутри channels, НЕ трогая глобальный
+# модуль time (иначе time.sleep сломается в остальных тестах).
+channels.time = types.SimpleNamespace(sleep=lambda s: None)
+
+
+class _Resp:
+    def __init__(self, code, text="ok"):
+        self.status_code = code
+        self.text = text
+
+
+def _run_post(post_fn):
+    """Подменяет requests.post, гоняет _post, возвращает число вызовов."""
+    calls = {"n": 0}
+
+    def wrapped(url, timeout=None, **kwargs):
+        calls["n"] += 1
+        return post_fn(calls["n"])
+
+    channels.requests.post = wrapped
+    channels._post("Telegram", "http://x")
+    return calls["n"]
+
+# Успех с первой попытки — ровно один запрос
+assert _run_post(lambda n: _Resp(200)) == 1
+
+# Временный сбой (500), затем успех — повтор сработал, доставлено за 2 запроса
+assert _run_post(lambda n: _Resp(200) if n > 1 else _Resp(500, "boom")) == 2
+
+# Постоянная ошибка (403 — бот заблокирован) — без повторов, один запрос
+assert _run_post(lambda n: _Resp(403, "Forbidden")) == 1
+
+# 429 (лимит) — временная, повторяем все попытки
+assert _run_post(lambda n: _Resp(429, "Too Many Requests")) == channels.SEND_ATTEMPTS
+print("OK повторы доставки (временные сбои повторяются, постоянные — нет)")
+
+# Зависание запроса не длится вечно: каждая попытка ограничена по времени.
+channels.config.HTTP_TIMEOUT = 0.3
+_block = threading.Event()  # никогда не set() — wait() блокирует целиком
+
+
+def _hang(url, timeout=None, **kwargs):
+    _block.wait(30)  # имитируем зависание много дольше HTTP_TIMEOUT
+    return None
+
+
+channels.requests.post = _hang
+_t0 = time.monotonic()
+channels._post("Telegram", "http://x")
+_elapsed = time.monotonic() - _t0
+# 3 попытки * (0.3 + 5с потолок) без пауз — заведомо секунды, а не 15 минут
+assert _elapsed < 20, f"зависание должно быть ограничено, а заняло {_elapsed:.1f}с"
+print("OK зависшая отправка ограничена по времени (не виснет навсегда)")
+
 # --- Вебхуки: секрет, дедупликация, эхо Instagram ------------------------------
 # Ответ генерируется в фоновом потоке (вебхук отвечает мессенджеру сразу),
 # поэтому после запроса даём потоку время отработать.
