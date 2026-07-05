@@ -242,4 +242,36 @@ assert sent == [app_module.FALLBACK_REPLY], (
 )
 print("OK предохранитель: зависшая генерация не оставляет клиента без ответа")
 
+# --- Анти-усыпление: keep-alive пингует свой URL ------------------------------
+# Корень «не ответил после паузы» — усыпление free-плана Render. Keep-alive
+# держит сервис тёплым. Без URL пинг молча выключен и не виснет; с URL —
+# периодически пингует именно свой публичный адрес.
+app_module.config.SELF_URL = ""
+app_module._keep_awake()  # выключен — должен просто вернуться, а не зациклиться
+print("OK keep-alive: без RENDER_EXTERNAL_URL выключается, не виснет")
+
+app_module.config.SELF_URL = "https://florabot.example"
+app_module.config.KEEPALIVE_INTERVAL = 600
+_pinged = []
+_sleeps = {"n": 0}
+
+
+def _fake_sleep(_s):
+    _sleeps["n"] += 1
+    if _sleeps["n"] >= 2:  # после первого пинга прерываем бесконечный цикл
+        raise KeyboardInterrupt
+
+
+app_module.requests = types.SimpleNamespace(
+    get=lambda url, timeout=None: _pinged.append(url),
+    RequestException=Exception,
+)
+app_module.time = types.SimpleNamespace(sleep=_fake_sleep)
+try:
+    app_module._keep_awake()
+except KeyboardInterrupt:
+    pass
+assert _pinged == ["https://florabot.example"], _pinged
+print("OK keep-alive: пингует свой публичный URL, чтобы сервис не засыпал")
+
 print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")

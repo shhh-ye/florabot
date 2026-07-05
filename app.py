@@ -19,9 +19,12 @@ import json
 import os
 import sys
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
+
+import requests
 
 # Вывод на Render идёт в пайп и буферизуется блоками: print() из фоновых
 # потоков виден в логах только при переполнении буфера или смерти процесса.
@@ -71,6 +74,33 @@ def _startup_checks():
 
 
 threading.Thread(target=_startup_checks, daemon=True).start()
+
+
+# Анти-усыпление free-плана Render: сервис сам пингует свой публичный URL,
+# пока жив, чтобы Render не считал его простаивающим и не усыплял. Это
+# устраняет корень «бот не ответил после паузы»: без усыпления нет
+# холодного старта, а значит нет и зависания первого исходящего запроса к
+# Telegram. Пинг идёт на ВНЕШНИЙ адрес (через роутер Render) — только такой
+# запрос сбрасывает таймер простоя; локальный self-call не считается.
+def _keep_awake():
+    if not config.SELF_URL or config.KEEPALIVE_INTERVAL <= 0:
+        print("Keep-alive выключен (нет RENDER_EXTERNAL_URL или интервал 0) — "
+              "на free-плане Render сервис будет засыпать после 15 мин простоя",
+              flush=True)
+        return
+    print(f"Keep-alive включён: пингую {config.SELF_URL} каждые "
+          f"{config.KEEPALIVE_INTERVAL}с, чтобы сервис не засыпал", flush=True)
+    while True:
+        time.sleep(config.KEEPALIVE_INTERVAL)
+        try:
+            requests.get(config.SELF_URL, timeout=config.HTTP_TIMEOUT)
+        except requests.RequestException as e:
+            # Разовая сетевая ошибка пинга не важна — не шумим стеком,
+            # на следующем тике попробуем снова.
+            print(f"Keep-alive: пинг не удался (не критично): {e}", flush=True)
+
+
+threading.Thread(target=_keep_awake, daemon=True).start()
 
 
 def _reply_in_background(handler, *args):
@@ -206,7 +236,7 @@ def receive_instagram_webhook():
 # Метка сборки: видна на главной странице сервиса. Позволяет за секунду
 # проверить, какой код реально запущен на Render (открыть URL сервиса в
 # браузере). Меняйте её при заметных правках, чтобы отличать версии.
-BUILD_MARKER = "florabot v6 — надёжная доставка: потолок времени + повторы (2026-07-05)"
+BUILD_MARKER = "florabot v7 — анти-усыпление (keep-alive) + надёжная доставка (2026-07-05)"
 
 
 @app.route("/", methods=["GET"])
