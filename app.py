@@ -32,7 +32,11 @@ sys.stderr.reconfigure(line_buffering=True)
 from flask import Flask, request, jsonify
 
 from bot import config
-from bot.channels import send_instagram_message, send_telegram_message
+from bot.channels import (
+    log_telegram_status,
+    send_instagram_message,
+    send_telegram_message,
+)
 from bot.llm import generate_reply
 from bot.rag.indexer import ensure_index
 
@@ -55,13 +59,18 @@ def _is_duplicate_event(event_id) -> bool:
         _seen_events.append(event_id)
         return False
 
-# При старте сервера строим RAG-индекс, если его ещё нет (после деплоя
-# на Render диск пустой). Строго в фоновом потоке: индексация ходит в
-# OpenAI и Google Таблицу, и если делать её при импорте, воркер не успевает
-# начать отвечать за таймаут gunicorn — тот убивает его ещё до старта, и
-# бот умирает в вечном цикле перезапусков. Пока индекс строится, бот уже
-# отвечает (просто без базы знаний — llm.py это переживает).
-threading.Thread(target=ensure_index, daemon=True).start()
+# При старте сервера: самодиагностика Telegram (жив ли токен, что с
+# вебхуком) и построение RAG-индекса, если его ещё нет (после деплоя на
+# Render диск пустой). Строго в фоновом потоке: оба шага ходят в сеть, и
+# если делать их при импорте, воркер не успевает начать отвечать за
+# таймаут gunicorn — тот убивает его ещё до старта. Пока индекс строится,
+# бот уже отвечает (просто без базы знаний — llm.py это переживает).
+def _startup_checks():
+    log_telegram_status()
+    ensure_index()
+
+
+threading.Thread(target=_startup_checks, daemon=True).start()
 
 
 def _reply_in_background(handler, *args):
@@ -197,7 +206,7 @@ def receive_instagram_webhook():
 # Метка сборки: видна на главной странице сервиса. Позволяет за секунду
 # проверить, какой код реально запущен на Render (открыть URL сервиса в
 # браузере). Меняйте её при заметных правках, чтобы отличать версии.
-BUILD_MARKER = "florabot v4 — диагностика + предохранитель ответа (2026-07-05)"
+BUILD_MARKER = "florabot v5 — диагностика отправки Telegram (2026-07-05)"
 
 
 @app.route("/", methods=["GET"])
