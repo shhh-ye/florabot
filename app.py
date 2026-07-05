@@ -17,8 +17,17 @@ Telegram + Instagram AI-бот с RAG (поиск по базе знаний)
 import hmac
 import json
 import os
+import sys
 import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+
+# Вывод на Render идёт в пайп и буферизуется блоками: print() из фоновых
+# потоков виден в логах только при переполнении буфера или смерти процесса.
+# Включаем построчный сброс, иначе по логам невозможно понять, что происходит.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 from flask import Flask, request, jsonify
 
@@ -68,20 +77,45 @@ def _reply_in_background(handler, *args):
     threading.Thread(target=handler, args=args, daemon=True).start()
 
 
+# Генерация выполняется в пуле с жёстким дедлайном (REPLY_DEADLINE): что бы
+# ни зависло внутри (ретраи SDK, сеть, лимиты API) — клиент не остаётся без
+# ответа навсегда, а получает извинение. Пул ограничен, чтобы зависшие
+# генерации не плодили потоки без предела.
+_reply_pool = ThreadPoolExecutor(max_workers=4)
+
+FALLBACK_REPLY = (
+    "Извините, я сейчас отвечаю медленнее обычного — что-то с связью. "
+    "Напишите, пожалуйста, ещё раз через пару минут."
+)
+
+
+def _generate_with_deadline(text, chat_key) -> str:
+    future = _reply_pool.submit(generate_reply, text, chat_key)
+    try:
+        return future.result(timeout=config.REPLY_DEADLINE)
+    except FutureTimeout:
+        print(f"[{chat_key}] не уложились в {config.REPLY_DEADLINE}с — "
+              "отправляю запасной ответ", flush=True)
+        return FALLBACK_REPLY
+    except Exception as e:
+        print(f"[{chat_key}] ошибка генерации ответа: {e}", flush=True)
+        return FALLBACK_REPLY
+
+
 def _process_telegram_message(chat_id, text):
     try:
-        reply = generate_reply(text, chat_id=f"tg:{chat_id}")
+        reply = _generate_with_deadline(text, f"tg:{chat_id}")
         send_telegram_message(chat_id, reply)
     except Exception as e:
-        print("Ошибка обработки сообщения Telegram:", e)
+        print("Ошибка обработки сообщения Telegram:", e, flush=True)
 
 
 def _process_instagram_message(sender_id, text):
     try:
-        reply = generate_reply(text, chat_id=f"ig:{sender_id}")
+        reply = _generate_with_deadline(text, f"ig:{sender_id}")
         send_instagram_message(sender_id, reply)
     except Exception as e:
-        print("Ошибка обработки сообщения Instagram:", e)
+        print("Ошибка обработки сообщения Instagram:", e, flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +197,7 @@ def receive_instagram_webhook():
 # Метка сборки: видна на главной странице сервиса. Позволяет за секунду
 # проверить, какой код реально запущен на Render (открыть URL сервиса в
 # браузере). Меняйте её при заметных правках, чтобы отличать версии.
-BUILD_MARKER = "florabot v3 — stop-slop в промпте (2026-07-03)"
+BUILD_MARKER = "florabot v4 — диагностика + предохранитель ответа (2026-07-05)"
 
 
 @app.route("/", methods=["GET"])

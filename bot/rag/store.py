@@ -23,7 +23,13 @@ from openai import OpenAI
 
 from bot import config
 
-_openai = OpenAI(api_key=config.OPENAI_API_KEY, timeout=config.OPENAI_TIMEOUT)
+# max_retries=1: SDK сам повторяет запрос при ошибках с растущей паузой,
+# и это время не входит в timeout — без лимита вызов растягивается на минуты
+_openai = OpenAI(
+    api_key=config.OPENAI_API_KEY,
+    timeout=config.OPENAI_TIMEOUT,
+    max_retries=config.OPENAI_MAX_RETRIES,
+)
 
 # Размер пачки текстов на один запрос к embeddings API
 _EMBED_BATCH_SIZE = 100
