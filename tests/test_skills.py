@@ -52,9 +52,9 @@ assert p.index("=== Правила поведения (скиллы) ===") < p.i
 )
 print("OK: скиллы попадают в системный промпт")
 
-# Реальная папка проекта: стилевой скилл на месте
+# Реальная папка проекта: стилевой скилл на месте и построен на humanizer
 real = (ROOT / "skills" / "humanizer.md").read_text(encoding="utf-8")
-assert "ГЛАВНОЕ ПРАВИЛО СТИЛЯ" in real and "ПЛОХО" in real and "ХОРОШО" in real
+assert "humanizer" in real.lower() and "ПЛОХО" in real and "ХОРОШО" in real
 print("OK: skills/humanizer.md существует и содержит правила стиля")
 
 print("\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ")
