@@ -107,6 +107,46 @@ parts = split_long_message("б" * 9000)  # без переносов — жёс�
 assert all(len(p) <= 4096 for p in parts) and sum(len(p) for p in parts) == 9000
 print("OK разрезание длинных сообщений")
 
+# --- Отправка с повторами: сетевой сбой → вторая попытка доставляет -----------
+import bot.channels as channels
+
+_calls = {"n": 0}
+
+
+class _FakeResp:
+    status_code = 200
+    text = "ok"
+
+
+def _flaky_post(url, timeout=None, **kw):
+    _calls["n"] += 1
+    if _calls["n"] == 1:
+        raise channels.requests.RequestException("обрыв сети (тестовый)")
+    return _FakeResp()
+
+
+_orig_post = channels.requests.post
+channels.requests.post = _flaky_post
+try:
+    channels._post("Тест", "http://example.invalid")
+    assert _calls["n"] == 2, "после сетевого сбоя должна быть вторая попытка"
+
+    # Постоянная ошибка (4xx) не повторяется
+    _calls["n"] = 0
+
+    class _Resp401(_FakeResp):
+        status_code = 401
+        text = "Unauthorized"
+
+    channels.requests.post = lambda url, timeout=None, **kw: (
+        _calls.__setitem__("n", _calls["n"] + 1) or _Resp401()
+    )
+    channels._post("Тест", "http://example.invalid")
+    assert _calls["n"] == 1, "4xx — постоянная ошибка, повторять нельзя"
+finally:
+    channels.requests.post = _orig_post
+print("OK отправка с повторами")
+
 # --- Вебхуки: секрет, дедупликация, эхо Instagram ------------------------------
 # Ответ генерируется в фоновом потоке (вебхук отвечает мессенджеру сразу),
 # поэтому после запроса даём потоку время отработать.
