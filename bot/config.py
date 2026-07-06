@@ -87,4 +87,5 @@ REPLY_DEADLINE = float(os.environ.get("REPLY_DEADLINE", "120"))
 # Сколько раз повторять отправку сообщения клиенту при сетевых сбоях.
 # Таймаут requests не покрывает зависший DNS-запрос, поэтому каждая
 # попытка дополнительно ограничена по времени и при зависании бросается.
-SEND_RETRIES = int(os.environ.get("SEND_RETRIES", "3"))
+# Паузы между попытками растут — сбойный резолвер успевает ожить.
+SEND_RETRIES = int(os.environ.get("SEND_RETRIES", "5"))

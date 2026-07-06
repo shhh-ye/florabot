@@ -3,19 +3,19 @@
 """
 
 import json
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 
 import requests
 
 from bot import config
 
-# Пул для попыток отправки. Зачем: requests.post с timeout всё равно может
-# зависнуть навсегда — таймаут requests не покрывает, например, зависший
-# DNS-запрос (getaddrinfo). Поэтому каждую попытку выполняем в отдельном
-# потоке с жёстким потолком времени; зависшую бросаем и пробуем заново.
-_send_pool = ThreadPoolExecutor(max_workers=8)
+# Общая сессия с keep-alive. Зачем: на Render иногда намертво зависает
+# системный DNS-запрос (getaddrinfo) к api.telegram.org — его не покрывает
+# таймаут requests, и отправка виснет навсегда. Сессия переиспользует уже
+# установленное соединение (его прогревает проверка токена при старте),
+# поэтому обычной отправке DNS вообще не нужен.
+_session = requests.Session()
 
 # Итоги одной попытки отправки
 _OK = "ok"          # доставлено
@@ -43,7 +43,7 @@ def _post_once(channel: str, url: str, kwargs: dict) -> str:
     """Одна попытка отправки. Логируем и успех, и ошибку — иначе по логам
     невозможно отличить «отправили» от «отправка молча провалилась»."""
     try:
-        r = requests.post(url, timeout=config.HTTP_TIMEOUT, **kwargs)
+        r = _session.post(url, timeout=config.HTTP_TIMEOUT, **kwargs)
     except requests.RequestException as e:
         print(f"✗ Ошибка сети при отправке в {channel}: {e}", flush=True)
         return _RETRY
@@ -60,25 +60,43 @@ def _post_once(channel: str, url: str, kwargs: dict) -> str:
     return _FATAL if 400 <= r.status_code < 500 else _RETRY
 
 
+def _attempt_with_deadline(channel: str, url: str, kwargs: dict, limit: float):
+    """
+    Одна попытка в отдельном потоке с жёстким потолком времени.
+
+    Именно отдельный поток на каждую попытку (а не пул): зависшая попытка
+    остаётся висеть в своём потоке-зомби и никому не мешает. Пул же такие
+    зомби постепенно забивают, и новые отправки перестают запускаться.
+    Возвращает исход или None, если попытка не уложилась в лимит.
+    """
+    box: dict = {}
+
+    def runner():
+        box["outcome"] = _post_once(channel, url, kwargs)
+
+    t = threading.Thread(target=runner, daemon=True)
+    t.start()
+    t.join(timeout=limit)
+    return box.get("outcome")
+
+
 def _post(channel: str, url: str, **kwargs):
     """
-    Отправка с повторами. Каждая попытка ограничена по времени через пул:
-    даже намертво зависший запрос (DNS и т.п.) не заблокирует доставку —
-    попытку бросаем и запускаем новую на свежем соединении.
+    Отправка с повторами. Даже намертво зависший запрос (например, на
+    зависшем DNS, который таймаут requests не покрывает) не заблокирует
+    доставку: попытку бросаем и запускаем новую, с растущей паузой —
+    чтобы сеть/резолвер успели ожить.
     """
     attempt_limit = config.HTTP_TIMEOUT + 10  # запас поверх таймаута requests
     for attempt in range(1, config.SEND_RETRIES + 1):
         print(f"→ Отправка в {channel} (попытка {attempt})...", flush=True)
-        future = _send_pool.submit(_post_once, channel, url, kwargs)
-        try:
-            outcome = future.result(timeout=attempt_limit)
-        except FutureTimeout:
-            print(f"✗ Отправка в {channel} зависла дольше {attempt_limit:.0f}с "
-                  "— бросаю эту попытку, пробую заново", flush=True)
-            continue
+        outcome = _attempt_with_deadline(channel, url, kwargs, attempt_limit)
         if outcome in (_OK, _FATAL):
             return
-        time.sleep(attempt)  # пауза перед повтором, чуть растёт
+        if outcome is None:
+            print(f"✗ Отправка в {channel} зависла дольше {attempt_limit:.0f}с "
+                  "— бросаю эту попытку, пробую заново", flush=True)
+        time.sleep(2 * attempt)  # растущая пауза: даём сети время ожить
     print(f"✗ Не удалось отправить в {channel} за {config.SEND_RETRIES} попыток",
           flush=True)
 
@@ -105,7 +123,9 @@ def log_telegram_status():
     """
     base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
     try:
-        me = requests.get(f"{base}/getMe", timeout=config.HTTP_TIMEOUT).json()
+        # Через общую сессию: заодно ПРОГРЕВАЕТ соединение с Telegram,
+        # которым потом пользуется отправка ответов (без нового DNS)
+        me = _session.get(f"{base}/getMe", timeout=config.HTTP_TIMEOUT).json()
         if me.get("ok"):
             print(f"Telegram-токен OK: бот @{me['result'].get('username')}",
                   flush=True)
@@ -114,7 +134,7 @@ def log_telegram_status():
                   "невозможна, получите новый токен у @BotFather и обновите "
                   "TELEGRAM_BOT_TOKEN в Render", flush=True)
 
-        info = requests.get(f"{base}/getWebhookInfo",
+        info = _session.get(f"{base}/getWebhookInfo",
                             timeout=config.HTTP_TIMEOUT).json()
         # last_error_message внутри — последняя ошибка доставки по мнению
         # самого Telegram, самая ценная строка для диагностики
