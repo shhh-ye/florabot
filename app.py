@@ -37,8 +37,14 @@ from bot.channels import (
     send_instagram_message,
     send_telegram_message,
 )
+from bot.dns_cache import install_dns_bypass
 from bot.llm import generate_reply
 from bot.rag.indexer import ensure_index
+
+# На Render системный DNS периодически виснет намертво — из-за этого
+# ответы не уходили в Telegram (см. bot/dns_cache.py). Включаем обход до
+# первого сетевого запроса: адреса Telegram берутся из кэша/известных IP.
+install_dns_bypass()
 
 app = Flask(__name__)
 
@@ -206,7 +212,7 @@ def receive_instagram_webhook():
 # Метка сборки: видна на главной странице сервиса. Позволяет за секунду
 # проверить, какой код реально запущен на Render (открыть URL сервиса в
 # браузере). Меняйте её при заметных правках, чтобы отличать версии.
-BUILD_MARKER = "florabot v7 — тёплое соединение с Telegram (2026-07-06)"
+BUILD_MARKER = "florabot v8 — обход системного DNS для Telegram (2026-07-06)"
 
 
 @app.route("/", methods=["GET"])

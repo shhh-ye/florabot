@@ -147,6 +147,54 @@ finally:
     channels._session.post = _orig_post
 print("OK отправка с повторами")
 
+# --- DNS-обход: зависший резолвер не оставляет бота без Telegram ---------------
+import socket
+import time
+
+from bot import dns_cache
+
+dns_cache.RESOLVE_TIMEOUT = 0.2  # в тесте не ждём настоящие 5 секунд
+_orig_resolver = dns_cache._real_getaddrinfo
+_orig_ttl = dns_cache.CACHE_TTL
+try:
+    # 1) Резолвер завис: быстро получаем известные IP Telegram, а не тишину
+    dns_cache._real_getaddrinfo = lambda *a, **kw: time.sleep(5)
+    t0 = time.time()
+    result = dns_cache._pinned_getaddrinfo("api.telegram.org", 443)
+    assert time.time() - t0 < 1, "зависший резолвер должен отбрасываться по потолку"
+    ips = {entry[4][0] for entry in result}
+    assert ips == set(dns_cache.PINNED_HOSTS["api.telegram.org"])
+
+    # 2) Успешный резолв кэшируется: повторный вызов не трогает резолвер
+    calls = {"n": 0}
+    fake = [(socket.AF_INET, socket.SOCK_STREAM,
+             socket.IPPROTO_TCP, "", ("1.2.3.4", 443))]
+
+    def counting_resolver(*a, **kw):
+        calls["n"] += 1
+        return fake
+
+    dns_cache._real_getaddrinfo = counting_resolver
+    assert dns_cache._pinned_getaddrinfo("api.telegram.org", 443) == fake
+    assert dns_cache._pinned_getaddrinfo("api.telegram.org", 443) == fake
+    assert calls["n"] == 1, "второй вызов должен идти из кэша, без резолвера"
+
+    # 3) Резолвер умер уже ПОСЛЕ успешного резолва: живём на устаревшем кэше
+    dns_cache.CACHE_TTL = 0  # кэш мгновенно считается протухшим
+    dns_cache._real_getaddrinfo = lambda *a, **kw: time.sleep(5)
+    assert dns_cache._pinned_getaddrinfo("api.telegram.org", 443) == fake
+
+    # 4) Чужие хосты идут через системный резолвер без вмешательства
+    dns_cache._real_getaddrinfo = counting_resolver
+    calls["n"] = 0
+    dns_cache._pinned_getaddrinfo("api.openai.com", 443)
+    assert calls["n"] == 1, "непривязанный хост должен резолвиться системой"
+finally:
+    dns_cache._real_getaddrinfo = _orig_resolver
+    dns_cache.CACHE_TTL = _orig_ttl
+    dns_cache._cache.clear()
+print("OK DNS-обход: потолок, кэш, запасные IP")
+
 # --- Вебхуки: секрет, дедупликация, эхо Instagram ------------------------------
 # Ответ генерируется в фоновом потоке (вебхук отвечает мессенджеру сразу),
 # поэтому после запроса даём потоку время отработать.
