@@ -125,8 +125,8 @@ def _flaky_post(url, timeout=None, **kw):
     return _FakeResp()
 
 
-_orig_post = channels.requests.post
-channels.requests.post = _flaky_post
+_orig_post = channels._session.post
+channels._session.post = _flaky_post
 try:
     channels._post("Тест", "http://example.invalid")
     assert _calls["n"] == 2, "после сетевого сбоя должна быть вторая попытка"
@@ -138,13 +138,13 @@ try:
         status_code = 401
         text = "Unauthorized"
 
-    channels.requests.post = lambda url, timeout=None, **kw: (
+    channels._session.post = lambda url, timeout=None, **kw: (
         _calls.__setitem__("n", _calls["n"] + 1) or _Resp401()
     )
     channels._post("Тест", "http://example.invalid")
     assert _calls["n"] == 1, "4xx — постоянная ошибка, повторять нельзя"
 finally:
-    channels.requests.post = _orig_post
+    channels._session.post = _orig_post
 print("OK отправка с повторами")
 
 # --- Вебхуки: секрет, дедупликация, эхо Instagram ------------------------------
