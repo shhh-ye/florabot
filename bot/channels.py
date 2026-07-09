@@ -3,8 +3,10 @@
 """
 
 import json
+import socket
 import threading
 import time
+from urllib.parse import urlsplit
 
 import requests
 
@@ -41,13 +43,20 @@ def split_long_message(text: str, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
 def _post_once(channel: str, url: str, kwargs: dict) -> str:
     """Одна попытка отправки. Логируем и успех, и ошибку — иначе по логам
     невозможно отличить «отправили» от «отправка молча провалилась»."""
+    t0 = time.monotonic()
     try:
         r = _session.post(url, timeout=config.HTTP_TIMEOUT, **kwargs)
     except requests.RequestException as e:
-        print(f"✗ Ошибка сети при отправке в {channel}: {e}", flush=True)
+        # Тип исключения и время — главная улика: ConnectTimeout на 20с —
+        # теряются SYN-пакеты (сеть/NAT), ReadTimeout — соединение есть,
+        # но сервер молчит, SSLError — застряли на TLS-рукопожатии.
+        print(f"✗ Ошибка сети при отправке в {channel} "
+              f"за {time.monotonic() - t0:.1f}с: {type(e).__name__}: {e}",
+              flush=True)
         return _RETRY
     if r.status_code == 200:
-        print(f"✓ Отправлено в {channel}", flush=True)
+        print(f"✓ Отправлено в {channel} за {time.monotonic() - t0:.1f}с",
+              flush=True)
         return _OK
     # Тело ответа Telegram/Meta объясняет причину (Unauthorized,
     # chat not found...) — печатаем его целиком
@@ -57,6 +66,49 @@ def _post_once(channel: str, url: str, kwargs: dict) -> str:
         return _RETRY
     # Остальные 4xx — постоянные (плохой токен, чат не найден), 5xx — временные
     return _FATAL if 400 <= r.status_code < 500 else _RETRY
+
+
+def _probe_host(host: str, port: int = 443, timeout: float = 3.0):
+    """
+    Диагностика зависшей отправки: пробуем голое TCP-соединение с КАЖДЫМ
+    адресом хоста по отдельности (как их видит отправка — через тот же
+    кэш DNS) и логируем исход. Разделяет причины зависания:
+
+    - ни один адрес не открылся → SYN-пакеты теряются по пути
+      (сеть/NAT хостинга или блок со стороны Telegram) — код бессилен;
+    - IPv6 висит, IPv4 открывается → таймауты сгорают на мёртвом IPv6;
+    - TCP открывается быстро, а отправка всё равно висит → проблема
+      выше: TLS-рукопожатие или сам HTTP-запрос.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except Exception as e:
+        print(f"⚙ Диагностика {host}: адреса не получены: {e}", flush=True)
+        return
+    seen = set()
+    for family, _, _, _, addr in infos:
+        ip = addr[0]
+        if ip in seen:
+            continue
+        seen.add(ip)
+        label = "IPv6" if family == socket.AF_INET6 else "IPv4"
+        s = None
+        t0 = time.monotonic()
+        try:
+            # Создание сокета тоже под try: в окружении вовсе без IPv6 оно
+            # падает сразу (Address family not supported)
+            s = socket.socket(family, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            s.connect(addr)
+            print(f"⚙ Диагностика {host}: TCP до {ip} ({label}) открылся "
+                  f"за {time.monotonic() - t0:.2f}с", flush=True)
+        except Exception as e:
+            print(f"⚙ Диагностика {host}: TCP до {ip} ({label}) НЕ открылся "
+                  f"за {time.monotonic() - t0:.2f}с — {type(e).__name__}: {e}",
+                  flush=True)
+        finally:
+            if s is not None:
+                s.close()
 
 
 def _attempt_with_deadline(channel: str, url: str, kwargs: dict, limit: float):
@@ -95,6 +147,7 @@ def _post(channel: str, url: str, **kwargs):
         if outcome is None:
             print(f"✗ Отправка в {channel} зависла дольше {attempt_limit:.0f}с "
                   "— бросаю эту попытку, пробую заново", flush=True)
+            _probe_host(urlsplit(url).hostname)
         time.sleep(2 * attempt)  # растущая пауза: даём сети время ожить
     print(f"✗ Не удалось отправить в {channel} за {config.SEND_RETRIES} попыток",
           flush=True)
