@@ -21,6 +21,22 @@ from bot import config
 # bot/dns_cache.py: кэш адресов + известные IP вместо зависшего резолвера.
 _session = requests.Session()
 
+# Диагностика: печатает строку только когда открывается НОВОЕ TCP-соединение
+# к Telegram. Если отправка виснет без этой строки прямо перед собой — значит,
+# использовался старый сокет из пула _session, а не новый — подтверждение
+# версии про протухшее keep-alive-соединение.
+_real_create_connection = socket.create_connection
+
+
+def _log_new_connection(address, *args, **kwargs):
+    host, port = address[0], address[1]
+    if host == "api.telegram.org":
+        print(f"🔌 Новое TCP-соединение к {host}:{port}", flush=True)
+    return _real_create_connection(address, *args, **kwargs)
+
+
+socket.create_connection = _log_new_connection
+
 # Итоги одной попытки отправки
 _OK = "ok"          # доставлено
 _RETRY = "retry"    # временная ошибка (сеть, 5xx, лимит) — можно повторить
