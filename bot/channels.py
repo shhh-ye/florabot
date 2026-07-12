@@ -2,8 +2,11 @@
 Отправка ответов в каналы: Telegram и Instagram.
 """
 
+import faulthandler
 import json
 import socket
+import ssl
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
@@ -70,15 +73,19 @@ def _post_once(channel: str, url: str, kwargs: dict) -> str:
 
 def _probe_host(host: str, port: int = 443, timeout: float = 3.0):
     """
-    Диагностика зависшей отправки: пробуем голое TCP-соединение с КАЖДЫМ
+    Диагностика зависшей отправки: повторяем путь requests по слоям —
+    TCP-соединение, TLS-рукопожатие, минимальный HTTP-запрос — с каждым
     адресом хоста по отдельности (как их видит отправка — через тот же
-    кэш DNS) и логируем исход. Разделяет причины зависания:
+    кэш DNS) и логируем длительность каждого слоя. По логам видно, какой
+    именно слой стоит:
 
-    - ни один адрес не открылся → SYN-пакеты теряются по пути
+    - TCP не открылся → SYN-пакеты теряются по пути
       (сеть/NAT хостинга или блок со стороны Telegram) — код бессилен;
-    - IPv6 висит, IPv4 открывается → таймауты сгорают на мёртвом IPv6;
-    - TCP открывается быстро, а отправка всё равно висит → проблема
-      выше: TLS-рукопожатие или сам HTTP-запрос.
+    - TCP открылся, TLS не прошёл → соединения режет что-то посередине
+      (DPI, прокси) или у хоста беда с TLS;
+    - TLS прошёл, HTTP-ответ не пришёл → сервер принимает, но молчит;
+    - все слои быстрые, а отправка всё равно висит → проблема не в сети,
+      а внутри процесса (см. дамп стеков).
     """
     try:
         infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
@@ -93,6 +100,7 @@ def _probe_host(host: str, port: int = 443, timeout: float = 3.0):
         seen.add(ip)
         label = "IPv6" if family == socket.AF_INET6 else "IPv4"
         s = None
+        stage = "TCP"
         t0 = time.monotonic()
         try:
             # Создание сокета тоже под try: в окружении вовсе без IPv6 оно
@@ -100,12 +108,30 @@ def _probe_host(host: str, port: int = 443, timeout: float = 3.0):
             s = socket.socket(family, socket.SOCK_STREAM)
             s.settimeout(timeout)
             s.connect(addr)
-            print(f"⚙ Диагностика {host}: TCP до {ip} ({label}) открылся "
-                  f"за {time.monotonic() - t0:.2f}с", flush=True)
+            tcp_dt = time.monotonic() - t0
+
+            stage = "TLS"
+            t1 = time.monotonic()
+            s = ssl.create_default_context().wrap_socket(
+                s, server_hostname=host)
+            tls_dt = time.monotonic() - t1
+
+            stage = "HTTP"
+            t2 = time.monotonic()
+            s.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\n"
+                      "Connection: close\r\n\r\n".encode())
+            first_bytes = s.recv(256)
+            http_dt = time.monotonic() - t2
+
+            status = first_bytes.split(b"\r\n", 1)[0].decode(
+                "latin-1", "replace") or "пустой ответ"
+            print(f"⚙ Диагностика {host} через {ip} ({label}): "
+                  f"TCP {tcp_dt:.2f}с, TLS {tls_dt:.2f}с, "
+                  f"HTTP {http_dt:.2f}с ({status})", flush=True)
         except Exception as e:
-            print(f"⚙ Диагностика {host}: TCP до {ip} ({label}) НЕ открылся "
-                  f"за {time.monotonic() - t0:.2f}с — {type(e).__name__}: {e}",
-                  flush=True)
+            print(f"⚙ Диагностика {host} через {ip} ({label}): слой {stage} "
+                  f"НЕ прошёл за {time.monotonic() - t0:.2f}с — "
+                  f"{type(e).__name__}: {e}", flush=True)
         finally:
             if s is not None:
                 s.close()
@@ -147,6 +173,14 @@ def _post(channel: str, url: str, **kwargs):
         if outcome is None:
             print(f"✗ Отправка в {channel} зависла дольше {attempt_limit:.0f}с "
                   "— бросаю эту попытку, пробую заново", flush=True)
+            if attempt == 1:
+                # Стек КАЖДОГО потока процесса — покажет точную строку, где
+                # застряла зависшая попытка (сокет/TLS/лок). Только на первом
+                # зависании: дамп многословный, дальше он не меняется.
+                print(f"⚙ Стек всех потоков (отправка в {channel} зависла) — "
+                      "начало", flush=True)
+                faulthandler.dump_traceback(file=sys.stderr)
+                print(f"⚙ Стек всех потоков — конец", flush=True)
             _probe_host(urlsplit(url).hostname)
         time.sleep(2 * attempt)  # растущая пауза: даём сети время ожить
     print(f"✗ Не удалось отправить в {channel} за {config.SEND_RETRIES} попыток",
