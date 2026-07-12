@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -77,6 +78,29 @@ def _startup_checks():
 
 
 threading.Thread(target=_startup_checks, daemon=True).start()
+
+
+# Heartbeat-диагностика: различает «завис конкретный запрос» и «замер весь
+# процесс». Поток просит sleep(10) и меряет, на сколько ОС его передержала.
+# Если в момент зависания DNS/отправки дрейф ~0 — процесс жил, тормозила
+# сеть/резолвер. Если дрейф вырастает синхронно с зависанием — замирает весь
+# контейнер (CPU-троттлинг на Render), и патчить сетевой код бессмысленно.
+def _heartbeat():
+    tick = 0
+    while True:
+        t0 = time.monotonic()
+        time.sleep(10)
+        drift = time.monotonic() - t0 - 10
+        if drift > 1.0:
+            print(f"⚠ HEARTBEAT: дрейф {drift:.1f}с — процесс замирал",
+                  flush=True)
+        else:
+            tick += 1
+            if tick % 6 == 0:  # OK печатаем раз в минуту, чтобы не спамить
+                print(f"heartbeat OK (дрейф {drift:.2f}с)", flush=True)
+
+
+threading.Thread(target=_heartbeat, daemon=True).start()
 
 
 def _reply_in_background(handler, *args):
@@ -212,7 +236,7 @@ def receive_instagram_webhook():
 # Метка сборки: видна на главной странице сервиса. Позволяет за секунду
 # проверить, какой код реально запущен на Render (открыть URL сервиса в
 # браузере). Меняйте её при заметных правках, чтобы отличать версии.
-BUILD_MARKER = "florabot v10 — стек зависших потоков + TLS/HTTP-зонд (2026-07-09)"
+BUILD_MARKER = "florabot v10.1 — heartbeat-диагностика + дедлайн генерации 30с (2026-07-12)"
 
 
 @app.route("/", methods=["GET"])
