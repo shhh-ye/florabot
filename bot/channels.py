@@ -11,6 +11,17 @@ import threading
 import time
 from urllib.parse import urlsplit
 
+# requests лениво делает `import netrc` внутри КАЖДОЙ отправки
+# (get_netrc_auth). Импорт модуля защищён блокировкой: если при старте два
+# потока наткнулись на него одновременно и один застрял, блокировка остаётся
+# захваченной навсегда — и все последующие отправки процесса виснут на ней
+# без таймаута (это и была причина «✗ Отправка в Telegram зависла дольше
+# 30с» по 5 попыток подряд; стек упирался в importlib acquire из
+# get_netrc_auth). Импортируем netrc здесь, в главном потоке, до запуска
+# фоновых потоков — тогда ленивый импорт в отправках берёт готовый модуль
+# из sys.modules и к блокировке импорта вообще не обращается.
+import netrc  # noqa: F401
+
 import requests
 
 from bot import config
@@ -20,22 +31,6 @@ from bot import config
 # минуту, и следующей отправке снова нужен резолв) — этим занимается
 # bot/dns_cache.py: кэш адресов + известные IP вместо зависшего резолвера.
 _session = requests.Session()
-
-# Диагностика: печатает строку только когда открывается НОВОЕ TCP-соединение
-# к Telegram. Если отправка виснет без этой строки прямо перед собой — значит,
-# использовался старый сокет из пула _session, а не новый — подтверждение
-# версии про протухшее keep-alive-соединение.
-_real_create_connection = socket.create_connection
-
-
-def _log_new_connection(address, *args, **kwargs):
-    host, port = address[0], address[1]
-    if host == "api.telegram.org":
-        print(f"🔌 Новое TCP-соединение к {host}:{port}", flush=True)
-    return _real_create_connection(address, *args, **kwargs)
-
-
-socket.create_connection = _log_new_connection
 
 # Итоги одной попытки отправки
 _OK = "ok"          # доставлено
